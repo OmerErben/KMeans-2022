@@ -1,3 +1,5 @@
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -21,10 +23,10 @@ typedef struct modify{
 } modify;
 
 #define DEFAULT_MAX_ITER 200
-#define EPSILON 0.001
 
 /* function decleration*/
-double** initMat(FILE* fp, int dim, int numLines);
+double** readDataFromFile(FILE* fp, int dim, int numLines);
+double* readLineIntoVec(int dim, char* currNumberStart, double* vec );
 cluster* initClusters(double** mat, int K, int dim);
 int argmin(double* vec, cluster* clusters, int K, int dim);
 void addVecToClust(node* nodeVec, cluster* clustVec);
@@ -32,62 +34,108 @@ void removeVecFromClust(node* nodeVec, cluster* clustVec);
 void swap(node* nodeVec, int oldClust, int newClust, cluster* clusters);
 double euqlideNorm(double* oldClust, double* newClust, int dim);
 double updateClusters(cluster* clusters, int K, int dim);
-int write(cluster* clusters, int K, FILE* fpOut, int dim);
+int writeClust(cluster* clusters, int K, FILE* fpOut, int dim );
 int matLen(FILE *fp);
 int dimCalc(FILE *fp);
-int initClustForVec( int numLines, int K, int dim, cluster* clusters, double** mat);
+int initClustForVec(int numLines, int K, int dim, cluster* clusters, double** mat);
 modify* updModify(cluster* clusters, modify* modArray, int dim, int K );
 void impChanges(cluster* clusters, int numLines, modify* modArray);
-int KMean(int K, int maxIter, FILE* fpIn, FILE* fpOut);
-void freeMemory(double** mat, cluster* clusters, int matDim, int k);
-int submitArgs(int argc, char **argv, FILE** fpIn, FILE** fpOut, double* k, double* maxIter);
+int KMean(int K, int maxIter, double epsilon, char* dataFilename, char* clustFilename);
+void freeMemory(double** mat, double** mat2, cluster* clusters, int matDim, int K);
+int submitArgs(int argc, char **argv, FILE** fpIn, FILE** fpOut, double* K, double* maxIter);
+static PyObject* fit(PyObject *self, PyObject *args);
 
 
+static PyObject* fit(PyObject *self, PyObject *args){
+    int K,maxIter,epsilon;
+    char *dataFilename, *clustFilename;
+    if(!PyArg_ParseTuple(args, "iidss", &K,&maxIter,&epsilon,&dataFilename, &clustFilename)) {
+        printf("An Error Has Occurred\n");
+        return NULL; 
+    }
+    return Py_BuildValue("i", KMean(K,maxIter,epsilon,dataFilename,clustFilename)); 
+}
 
-/* create an array of pointers to vectors called "mat"
- output: read file and update the array of vertex , init all clusters to null*/
-double** initMat(FILE* fp, int dim, int numLines){
-     double** mat = (double**)calloc(numLines , sizeof(double*));
-     int lineNumber, i;
-     double* vec;
-     char* line;
-     char* currNumStart;
-     char* currComma;
-     rewind(fp);
+static PyMethodDef capiMethods[] = {
+        {"k_means",                   /* the Python method name that will be used */
+                (PyCFunction) fit, /* the C-function that implements the Python function and returns static PyObject*  */
+                METH_VARARGS,           /* flags indicating parameters accepted for this function */
+                        PyDoc_STR("kmeans ++")}, /*  The docstring for the function */
+        {NULL, NULL, 0, NULL}     /* The last entry must be all NULL as shown to act as a
+                                 sentinel. Python looks for this entry to know that all
+                                 of the functions for the module have been defined. */
+};
 
-        line = (char*)calloc(1024,sizeof(char));
-        if (line == NULL)
-        {
+/* This initiates the module using the above definitions. */
+static PyModuleDef moduledef = {
+        PyModuleDef_HEAD_INIT,
+        "mykmeanssp", /* name of module */
+        NULL, /* module documentation, may be NULL */
+        -1,  /* size of per-interpreter state of the module, or -1 if the module keeps state in global variables. */
+        capiMethods /* the PyMethodDef array from before containing the methods of the extension */
+};
+
+/*
+ * The PyModuleDef structure, in turn, must be passed to the interpreter in the module’s initialization function.
+ * The initialization function must be named PyInit_name(), where name is the name of the module and should match
+ * what we wrote in struct PyModuleDef.
+ * This should be the only non-static item defined in the module file
+ */
+PyMODINIT_FUNC
+PyInit_mykmeanssp(void){
+    PyObject *m;
+    m = PyModule_Create(&moduledef);
+    if (!m) {
+        return NULL;
+    }
+    return m;
+}
+
+double** readDataFromFile(FILE* fp, int dim, int numLines){
+    int lineNumber;
+    char *currNumberStart, *line;
+    double* vec;
+    double** mat = (double**)calloc(numLines , sizeof(double*));
+    rewind(fp);
+    line = (char*)calloc(1024,sizeof(char));
+    if (line == NULL || mat == NULL){
+        printf("An Error Has Occurred\n");
+        return NULL;
+    }
+    for(lineNumber =0 ; lineNumber < numLines; lineNumber++){
+        currNumberStart = line;
+        if(fscanf(fp, "%s",line)== EOF){
             printf("An Error Has Occurred\n");
             return NULL;
         }
-        
-        for(lineNumber =0 ; lineNumber < numLines; lineNumber++)
-        {
-            currNumStart = line;
-            fscanf(fp, "%s",line);
-            vec = (double*) calloc(dim,sizeof(double));
-            if (vec == NULL)
-            {
-                printf("An Error Has Occurred\n");
-                return NULL;
-            }
-            for ( i =0; i<dim -1; i++){
-                currComma = strchr((char*)currNumStart,','); /* point to the first "," in line */
-                *currComma = '\0'; 
-                vec[i] = atof(currNumStart); /* insert word to the vector */
-                currNumStart = ++currComma; /* update line to tne next char after , */
-            }
-            vec[dim-1] = atof(currNumStart);
-            mat[lineNumber]= vec; 
-       
+        vec = (double*) calloc(dim,sizeof(double));
+        if (vec == NULL){
+            printf("An Error Has Occurred\n");
+            return NULL;
         }
-        free(line);
-        fclose(fp);
-        return mat;
+        mat[lineNumber]= readLineIntoVec(dim,currNumberStart,vec);
+    }
+    free(line);
+    return mat;
 }
+
+
+/* read line from file and write it to vec */
+double* readLineIntoVec(int dim, char* currNumberStart, double* vec ){
+    char* currComma;
+    int wordNum;
+    for ( wordNum =0; wordNum < dim -1; wordNum++){
+        currComma = strchr((char*)currNumberStart,','); /* point to the first "comma" in line */
+        *currComma = '\0'; 
+        vec[wordNum] = atof(currNumberStart); /* insert word to vec */
+        currNumberStart = ++currComma; /* update line to tne next char after , */
+    }
+    vec[dim-1] = atof(currNumberStart);
+    return vec;
+}
+
 /* free memory at the end of KMeans */
-void freeMemory(double** mat, cluster* clusters, int matDim, int k){
+void freeMemory(double** mat, double** mat2, cluster* clusters, int matDim, int K){
     node* curr;
     node* step;
     int i;
@@ -96,7 +144,12 @@ void freeMemory(double** mat, cluster* clusters, int matDim, int k){
         free(mat[i]);
     }
     free(mat);
-    for (i = 0; i < k; i++)
+    for (i = 0; i < K; i++)
+    {
+        free(mat2[i]);
+    }
+    free(mat2);
+    for (i = 0; i < K; i++)
     {
         free(clusters[i].clustVec);
         curr = clusters[i].vecLst;
@@ -136,11 +189,11 @@ int argmin(double* vec, cluster* clusters, int K, int dim){
 
     for(clustIndex =0; clustIndex < K; clustIndex++ ){
        sum =0;
-       for(curDim = 0; curDim< dim; curDim++){
+       for(curDim = 0; curDim < dim; curDim++){
            sum += pow((vec[curDim] - clusters[clustIndex].clustVec[curDim]),2);
        }
-       if (clustIndex ==0) minSum = sum;
-        else if(sum<minSum) {
+       if (clustIndex == 0) minSum = sum;
+        else if(sum < minSum) {
             minSum = sum;
             minIndex = clustIndex;
         } 
@@ -202,14 +255,14 @@ double euqlideNorm(double* oldClust, double* newClust, int dim){
 
 /* output: compute and update newClustArray and returns the maximum delta */
 double updateClusters(cluster* clusters, int K, int dim){
-    double deltaMax =0, delta;
+    double deltaMax = 0, delta;
     int clusterIndex, vecLstLen, curDim;
     double* newClust;
     double* oldClust;
     node* currVec;
     
-    for(clusterIndex =0; clusterIndex< K; clusterIndex++){
-        vecLstLen =0;
+    for(clusterIndex = 0; clusterIndex< K; clusterIndex++){
+        vecLstLen = 0;
         newClust = (double*)calloc(dim, sizeof(double));
         if(newClust == NULL){
             printf("An Error Has Occurred\n");
@@ -218,19 +271,19 @@ double updateClusters(cluster* clusters, int K, int dim){
         currVec = clusters[clusterIndex].vecLst;
         while (currVec != NULL)
         {
-            for(curDim =0; curDim<dim; curDim++){
+            for(curDim = 0; curDim < dim; curDim++){
                 newClust[curDim] += currVec->vec[curDim];
             }
             vecLstLen++;
             currVec = currVec->next;
         }
         /* we assume vecLstLen != 0 becuse clustVec dosent have an empty list */
-        for(curDim =0; curDim< dim; curDim++){
-            newClust[curDim] = newClust[curDim]/vecLstLen;
+        for(curDim = 0; curDim < dim; curDim++){
+            newClust[curDim] = newClust[curDim] / vecLstLen;
         }
-        oldClust =  clusters[clusterIndex].clustVec;
+        oldClust = clusters[clusterIndex].clustVec;
         delta = euqlideNorm(oldClust, newClust, dim);
-        if (delta > deltaMax) deltaMax= delta;
+        if (delta > deltaMax) deltaMax = delta;
         free(oldClust);
         clusters[clusterIndex].clustVec = newClust;
     }
@@ -238,10 +291,10 @@ double updateClusters(cluster* clusters, int K, int dim){
 }
 
 /* output: create output.txt and write to it*/
-int write(cluster* clusters, int K, FILE* fpOut, int dim ){
+int writeClust(cluster* clusters, int K, FILE* fpOut, int dim ){
     int cluster, curDim;
-    for(cluster =0; cluster <K; cluster++){
-        for(curDim =0; curDim< dim; curDim++){
+    for(cluster = 0; cluster < K; cluster++){
+        for(curDim = 0; curDim < dim; curDim++){
              fprintf(fpOut,"%.4f",clusters[cluster].clustVec[curDim]);
             if (curDim == dim -1 && cluster != K-1 )
             {
@@ -253,14 +306,13 @@ int write(cluster* clusters, int K, FILE* fpOut, int dim ){
         }
     }
     fprintf(fpOut,"%s","\n");
-    fclose(fpOut);
     return 0; 
 }
 
 /*output: returns number of lines*/
 int matLen(FILE *fp ){
     char ch;
-    int vecCount =0;
+    int vecCount = 0;
     rewind(fp); /* goes to the beginning of the file*/
      do{
         ch = fgetc(fp);
@@ -268,26 +320,28 @@ int matLen(FILE *fp ){
     } while (ch != EOF);
     return vecCount ;
 }
+
 /* output: return the dimension*/
 int dimCalc(FILE *fp){
     char ch = '0';
     int dimCount = 1;
     rewind(fp); /* goes to the beginning of th file*/
-    while (ch!='\n')
+    while (ch != '\n')
     {
         ch = fgetc(fp);
         if(ch == ',') dimCount++;
     }
   return dimCount;
 }
+
 /*create node for each vec and insert it to it's closest cluster */
 int initClustForVec( int numLines, int K, int dim, cluster* clusters, double** mat){
     int vec, newClust;
     node* newNodeVec;
-    for(vec = 0; vec< numLines; vec++){
+    for(vec = 0; vec < numLines; vec++){
         newClust = argmin(mat[vec],clusters,K,dim);
         newNodeVec = (node*)malloc(sizeof(node));
-        if(newNodeVec == NULL ) {
+        if(newNodeVec == NULL) {
             printf("An Error Has Occurred\n");
             return 0;
         }
@@ -299,15 +353,15 @@ int initClustForVec( int numLines, int K, int dim, cluster* clusters, double** m
 
 /* for every vec save its old cluster & new cluster */ 
 modify* updModify( cluster* clusters, modify* modArray, int dim, int K ){
-    int newClust, clustIndex, vecCount =0;
+    int newClust, clustIndex, vecCount = 0;
     node* curVec;
-    for(clustIndex =0; clustIndex< K; clustIndex++){
+    for(clustIndex = 0; clustIndex < K; clustIndex++){
             curVec = clusters[clustIndex].vecLst;
             while (curVec != NULL)
             {
                 newClust = argmin(curVec->vec,clusters,K,dim);
                 modArray[vecCount].newClustIndex = newClust;
-                modArray[vecCount].oldClustIndex=clustIndex;
+                modArray[vecCount].oldClustIndex = clustIndex;
                 modArray[vecCount].nodeVec = curVec;
                 vecCount++;
                 curVec = curVec->next;
@@ -319,54 +373,61 @@ modify* updModify( cluster* clusters, modify* modArray, int dim, int K ){
 /* update cluster's linked list according modArray */ 
 void impChanges(cluster* clusters, int numLines, modify* modArray){
     int modNum,newClust,oldClust;
-    for(modNum = 0; modNum< numLines; modNum++){
+    for(modNum = 0; modNum < numLines; modNum++){
             newClust = modArray[modNum].newClustIndex;
             oldClust = modArray[modNum].oldClustIndex;
             if(newClust != oldClust ){
-                swap(modArray[modNum].nodeVec, oldClust,newClust, clusters);
+                swap(modArray[modNum].nodeVec, oldClust, newClust, clusters);
             }
         }
 }
 
-int KMean(int K, int maxIter, FILE* fpIn, FILE* fpOut){ 
-    double maxDelta = EPSILON;
-    int  iter =0, dim, numLines, memAloc;
+int KMean(int K, int maxIter, double epsilon, char* dataFilename, char* clustFilename){ 
+    double maxDelta = epsilon;
+    int  iter = 0, dim, numLines, memAloc;
     modify* modArray;
     double** mat; 
+    double** mat2;
     cluster* clusters;
-    dim = dimCalc(fpIn);
-    numLines = matLen(fpIn);
-
+    FILE *dataFile, *clustFile;
+    dataFile = fopen(dataFilename, "r");
+    clustFile = fopen(clustFilename, "r");
+    dim = dimCalc(dataFile);
+    numLines = matLen(dataFile);
+    
     if(K > numLines){
         printf("Invalid Input!\n");
         return 1;
     }
-
-    mat =initMat(fpIn,dim,numLines);
+    mat =readDataFromFile(dataFile, dim, numLines);
     if(mat == NULL){
         printf("An Error Has Occurred\n");
         return 1;
     }
-    clusters = initClusters(mat,K,dim);
+    mat2 = readDataFromFile(clustFile, dim, K);
+    clusters = initClusters(mat2,K,dim);
     if(clusters == NULL){
         printf("An Error Has Occurred\n");
         return 1;
     }
-    memAloc= initClustForVec(numLines, K, dim, clusters,mat);
+    memAloc= initClustForVec(numLines, K, dim, clusters, mat);
     if(memAloc == 0) {
         printf("An Error Has Occurred\n");
         return 1;
     }
-    while (iter < maxIter && maxDelta >= EPSILON)
+    fclose(clustFile);
+    fclose(dataFile);
+    
+    while (iter < maxIter && maxDelta >= epsilon)
     {
         modArray =(modify*) calloc(numLines,sizeof(modify));
         if(modArray == NULL ) {
             printf("An Error Has Occurred\n");
             return 1;
         }
-        modArray = updModify(clusters,modArray,dim,K); /* update modArray according new clusters */
-        impChanges(clusters, numLines,modArray); /* link evrey vec to its new cluster according to modArray */ 
-        maxDelta = updateClusters(clusters,K,dim); /* compute new max deltas */ 
+        modArray = updModify(clusters, modArray, dim, K); /* update modArray according new clusters */
+        impChanges(clusters, numLines, modArray); /* link evrey vec to its new cluster according to modArray */ 
+        maxDelta = updateClusters(clusters, K, dim); /* compute new max deltas */ 
         if(maxDelta == -1) {
             printf("An Error Has Occurred\n");
             return 1;
@@ -378,15 +439,17 @@ int KMean(int K, int maxIter, FILE* fpIn, FILE* fpOut){
         
         
     }
-    write(clusters,K,fpOut,dim);
-    freeMemory(mat,clusters,numLines,K);
+    clustFile = fopen(clustFilename, "w");
+    writeClust(clusters, K, clustFile, dim);
+    fclose(clustFile);
+    freeMemory(mat, mat2, clusters, numLines, K);
     return 0;
 }
 
 /* submit args to vars, return 1 if successed else 0 */
-int submitArgs(int argc, char **argv, FILE** fpIn, FILE** fpOut, double* k, double* maxIter){
-    char* inputFile;
-    char* outputFile;
+int submitArgs(int argc, char **argv, FILE** fpIn, FILE** fpOut, double* K, double* maxIter){
+    char* inputFile = NULL;
+    char* outputFile = NULL;
     char* eptr;
     if (argc != 4 && argc != 5)
     {
@@ -394,7 +457,7 @@ int submitArgs(int argc, char **argv, FILE** fpIn, FILE** fpOut, double* k, doub
         return 1;
     }
 
-    *k = strtod(argv[1], &eptr);
+    *K = strtod(argv[1], &eptr);
 
     /* if maxIter is not given */
     if (argc == 4)
@@ -422,22 +485,10 @@ int submitArgs(int argc, char **argv, FILE** fpIn, FILE** fpOut, double* k, doub
 
 
     /* input check */
-    if (*k <= 0|| *k != (int)*k || *maxIter <= 0|| *maxIter != (int)*maxIter || *fpIn == NULL || fpOut == NULL)
+    if (*K <= 0 || *K != (int)*K || *maxIter <= 0 || *maxIter != (int)*maxIter || *fpIn == NULL || fpOut == NULL)
     {
         printf("Invalid Input!\n");
         return 1;
     }
     return 1;
-}
-
-int main(int argc, char **argv){ 
-    double KDouble, maxIterDouble ;
-    int K, maxIter;
-    FILE* fpIn;
-    FILE* fpOut;
-    if(submitArgs(argc,argv,&fpIn,&fpOut,&KDouble,&maxIterDouble) == 0) return 1;
-    K = (int) KDouble;
-    maxIter = (int)maxIterDouble;
-    KMean(K,maxIter,fpIn, fpOut);
-    return 0;
 }
